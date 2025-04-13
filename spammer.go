@@ -25,7 +25,7 @@ func RunPipeline(cmds ...cmd) {
 }
 
 func SelectUsers(in, out chan interface{}) {
-	seen := make(map[string]bool)
+	seen := make(map[string]struct{})
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
@@ -35,17 +35,25 @@ func SelectUsers(in, out chan interface{}) {
 			defer wg.Done()
 			user := GetUser(email)
 			mu.Lock()
-			if seen[user.Email] {
+			if _, ok := seen[user.Email]; ok {
 				mu.Unlock()
 				return
 			}
-			seen[user.Email] = true
+			seen[user.Email] = struct{}{}
 			mu.Unlock()
 			out <- user
 		}(v.(string), out)
 	}
 
 	wg.Wait()
+}
+
+func SelectMessagesWorker(users []User, out chan interface{}, wg *sync.WaitGroup) {
+	msg, _ := GetMessages(users...)
+	for _, value := range msg {
+		out <- value
+	}
+	wg.Done()
 }
 
 func SelectMessages(in, out chan interface{}) {
@@ -55,14 +63,9 @@ func SelectMessages(in, out chan interface{}) {
 		v, isOpen := <-in
 		if len(users) == 2 || !isOpen {
 			wg.Add(1)
-			go func(users []User, out chan interface{}) {
-				msg, _ := GetMessages(users...)
-				for _, value := range msg {
-					out <- value
-				}
-				wg.Done()
-			}(users, out)
+			go SelectMessagesWorker(users, out, &wg)
 			users = []User{}
+			users = users[:0]
 		}
 		if !isOpen {
 			break
@@ -78,18 +81,20 @@ type CheckSpamStruct struct {
 	HasSpam bool
 }
 
+func worker(in, out chan interface{}, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for msg := range in {
+		temp, _ := HasSpam(msg.(MsgID))
+		out <- CheckSpamStruct{MsgID: msg.(MsgID), HasSpam: temp}
+	}
+}
+
 func CheckSpam(in, out chan interface{}) {
 	var wg sync.WaitGroup
 	numWorkers := 5
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
-		go func(in, out chan interface{}) {
-			defer wg.Done()
-			for msg := range in {
-				temp, _ := HasSpam(msg.(MsgID))
-				out <- CheckSpamStruct{MsgID: msg.(MsgID), HasSpam: temp}
-			}
-		}(in, out)
+		go worker(in, out, &wg)
 	}
 	wg.Wait()
 
