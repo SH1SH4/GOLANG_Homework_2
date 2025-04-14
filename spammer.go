@@ -50,6 +50,7 @@ func SelectUsers(in, out chan interface{}) {
 
 func SelectMessagesWorker(users []User, out chan interface{}, wg *sync.WaitGroup) {
 	msg, _ := GetMessages(users...)
+
 	for _, value := range msg {
 		out <- value
 	}
@@ -59,18 +60,18 @@ func SelectMessagesWorker(users []User, out chan interface{}, wg *sync.WaitGroup
 func SelectMessages(in, out chan interface{}) {
 	var wg sync.WaitGroup
 	users := []User{}
-	for {
-		v, isOpen := <-in
-		if len(users) == 2 || !isOpen {
+	for v := range in {
+		users = append(users, v.(User))
+		if len(users) == 2 {
 			wg.Add(1)
 			go SelectMessagesWorker(users, out, &wg)
 			users = []User{}
-			users = users[:0]
+			// users = users[:0]
 		}
-		if !isOpen {
-			break
-		}
-		users = append(users, v.(User))
+	}
+	if len(users) > 0 {
+		wg.Add(1)
+		go SelectMessagesWorker(users, out, &wg)
 	}
 
 	wg.Wait()
