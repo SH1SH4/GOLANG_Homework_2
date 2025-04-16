@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"sort"
 	"sync"
 )
@@ -31,6 +32,11 @@ func SelectUsers(in, out chan interface{}) {
 
 	for v := range in {
 		wg.Add(1)
+		value, ok := v.(string)
+		if !ok {
+			log.Printf("select users: не удалось привести к string: %v", v)
+			return
+		}
 		go func(email string, out chan interface{}) {
 			defer wg.Done()
 			user := GetUser(email)
@@ -42,31 +48,30 @@ func SelectUsers(in, out chan interface{}) {
 			seen[user.Email] = struct{}{}
 			mu.Unlock()
 			out <- user
-		}(v.(string), out)
+		}(value, out)
 	}
 
 	wg.Wait()
 }
 
 func SelectMessagesWorker(users []User, out chan interface{}, wg *sync.WaitGroup) {
+	defer wg.Done()
 	msg, _ := GetMessages(users...)
 
 	for _, value := range msg {
 		out <- value
 	}
-	wg.Done()
 }
 
 func SelectMessages(in, out chan interface{}) {
 	var wg sync.WaitGroup
-	users := []User{}
+	users := make([]User, 0, GetMessagesMaxUsersBatch)
 	for v := range in {
 		users = append(users, v.(User))
-		if len(users) == 2 {
+		if len(users) == GetMessagesMaxUsersBatch {
 			wg.Add(1)
 			go SelectMessagesWorker(users, out, &wg)
-			users = []User{}
-			// users = users[:0]
+			users = make([]User, 0, GetMessagesMaxUsersBatch)
 		}
 	}
 	if len(users) > 0 {
@@ -85,15 +90,19 @@ type CheckSpamStruct struct {
 func worker(in, out chan interface{}, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for msg := range in {
-		temp, _ := HasSpam(msg.(MsgID))
-		out <- CheckSpamStruct{MsgID: msg.(MsgID), HasSpam: temp}
+		value, ok := msg.(MsgID)
+		if !ok {
+			log.Printf("worker: не удалось привести к msgID: %v", msg)
+			return
+		}
+		temp, _ := HasSpam(value)
+		out <- CheckSpamStruct{MsgID: value, HasSpam: temp}
 	}
 }
 
 func CheckSpam(in, out chan interface{}) {
 	var wg sync.WaitGroup
-	numWorkers := 5
-	for i := 0; i < numWorkers; i++ {
+	for i := 0; i < HasSpamMaxAsyncRequests; i++ {
 		wg.Add(1)
 		go worker(in, out, &wg)
 	}
@@ -103,9 +112,13 @@ func CheckSpam(in, out chan interface{}) {
 
 func CombineResults(in, out chan interface{}) {
 	total := []CheckSpamStruct{}
-	for value := range in {
-		v := value.(CheckSpamStruct)
-		total = append(total, v)
+	for v := range in {
+		value, ok := v.(CheckSpamStruct)
+		if !ok {
+			log.Printf("combine results: не удалось привести к CheckSpamStruct: %v", v)
+			return
+		}
+		total = append(total, value)
 	}
 	sort.Slice(total, func(i, j int) bool {
 		if total[i].HasSpam != total[j].HasSpam {
